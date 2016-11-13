@@ -11,6 +11,7 @@ buildNumber.properties
 *.iml
 agentstore.jks
 agent.properties
+debugWorkDir/
 
 # =========================
 # Operating System Files
@@ -62,3 +63,4 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
