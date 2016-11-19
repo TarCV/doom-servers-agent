@@ -4,3 +4,6 @@ IF [%1]==[] GOTO Continue
 SHIFT
 GOTO Loop
 :Continue
+ECHO DoomServerReady
+SET /P TMPVAR=
+ECHO %TMPVAR%
