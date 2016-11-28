@@ -1,6 +1,10 @@
 package com.github.tarcv.doom_servers;
 
-import org.apache.commons.exec.*;
+import org.jetbrains.annotations.Nullable;
+import org.zeroturnaround.exec.ProcessExecutor;
+import org.zeroturnaround.exec.StartedProcess;
+import org.zeroturnaround.exec.stream.ExecuteStreamHandler;
+import org.zeroturnaround.exec.stream.PumpStreamHandler;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -11,6 +15,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 import static java.nio.file.StandardOpenOption.*;
@@ -22,10 +29,13 @@ public class Server {
     private final ServerConfiguration configuration;
     private final File executable;
     private final File workDir;
-    private ProcessDestroyer processDestroyer;
     private PrintWriter processInputSource;
 
+    @Nullable
+    private volatile OutputHandler outputLineHandler = null;
+
     private List<Thread> handlingThreads = new ArrayList<>();
+    private StartedProcess serverProcess;
 
     public Server(Path executable, Path workDir, ServerConfiguration configuration) {
         this.executable = executable.toFile();
@@ -33,23 +43,27 @@ public class Server {
         this.configuration = configuration;
     }
 
-    public void run() throws IOException {
-        CommandLine commandLine = new CommandLine(executable);
-        final boolean handleQuoting = true;
-        commandLine.addArguments(configuration.getCommandline().toArray(new String[0]), handleQuoting);
+    public void run() throws IOException, TimeoutException, InterruptedException {
+        List<String> commandParts = new ArrayList<>();
+        commandParts.add(executable.toString());
+        commandParts.addAll(configuration.getCommandline());
 
         createFiles(workDir, configuration.getConfigs());
-
-        Executor exec = new DefaultExecutor();
-        processDestroyer = new ShutdownHookProcessDestroyer();
 
         ExecuteStreamHandler executeStreamHandler = prepareStreamHandler();
         assert this.processInputSource != null;
 
-        exec.setWorkingDirectory(workDir);
-        exec.setProcessDestroyer(processDestroyer);
-        exec.setStreamHandler(executeStreamHandler);
-        exec.execute(commandLine);
+        ServerInitingWaiter serverInitingWaiter = new ServerInitingWaiter(processInputSource);
+        outputLineHandler = serverInitingWaiter;
+
+        serverProcess = new ProcessExecutor()
+                .command(commandParts)
+                .directory(workDir)
+                .streams(executeStreamHandler)
+                .destroyOnExit()
+                .start();
+
+        serverInitingWaiter.await();
     }
 
     private ExecuteStreamHandler prepareStreamHandler() throws IOException {
@@ -102,10 +116,11 @@ public class Server {
     }
 
     public void onOutputLine(String line) throws IOException {
-        if (line.contains("DoomServerReady")) {
-            processInputSource.println("echo DoomConsoleReady");
-        } else if (line.contains("DoomConsoleReady")) {
-            // TODO: server is ready for remote control
+        if (outputLineHandler != null) {
+            OutputHandler tmp = outputLineHandler;
+            assert tmp != null;
+            tmp.onOutputLine(line);
+
         }
         System.out.println("Output:" + line);
     }
@@ -135,10 +150,26 @@ public class Server {
         return outputStream;
     }
 
+    public List<String> executeConsole(List<String> command) throws InterruptedException, TimeoutException {
+        // It is assumed that command contains a game-specific command to output 'DoomConsoleResultEnd' right after the command result
+        for (String subcommand : command) {
+            processInputSource.println(subcommand);
+        }
+
+        try {
+            ConsoleResultWaiter consoleResultWaiter = new ConsoleResultWaiter();
+            outputLineHandler = consoleResultWaiter;
+            return consoleResultWaiter.await();
+        } finally {
+            outputLineHandler = null;
+        }
+    }
+
     /**
      * Original {@link PumpStreamHandler} doesn't flush 'input stream' OutputStream when needed.
      * So it cannot be used to send some command to a running executable.<br />
      * This Handler fixes that <br />
+     * TODO: Check if this handler is needed with ZT-Exec<br/>
      *
      * Also it closed Server.processInputSource in {@link #stop()}. Which is required to correctly shutdown streams.
      */
@@ -181,7 +212,7 @@ public class Server {
         }
 
         @Override
-        public void stop() throws IOException {
+        public void stop() {
             processInputSource.close(); //otherwise super.stop() will hang
 
             super.stop();
@@ -192,5 +223,68 @@ public class Server {
                 Thread.currentThread().interrupt();
             }
         }
+    }
+
+    private static class ServerInitingWaiter implements OutputHandler {
+        private final CountDownLatch initNotifier = new CountDownLatch(1);
+        private final Object lock = new Object();
+        private final PrintWriter processInputSource;
+
+        public ServerInitingWaiter(PrintWriter processInputSource) {
+            this.processInputSource = processInputSource;
+        }
+
+        @Override
+        public void onOutputLine(String line) {
+            synchronized (lock) {
+                if (line.contains("DoomServerReady")) {
+                    processInputSource.println("echo DoomConsoleReady");
+                } else if (line.contains("DoomConsoleReady")) {
+                    initNotifier.countDown();
+                }
+            }
+        }
+
+        void await() throws InterruptedException, TimeoutException {
+            if (!initNotifier.await(60, TimeUnit.SECONDS)) {
+                throw new TimeoutException("Timed out waiting for server to start");
+            }
+        }
+    }
+
+    private static class ConsoleResultWaiter implements OutputHandler {
+        private final CountDownLatch consoleResultNotifier = new CountDownLatch(1);
+        private final List<String> consoleResultBuffer = new ArrayList<>();
+        private final Object lock = new Object();
+
+        @Override
+        public void onOutputLine(String line) {
+            synchronized (lock) {
+                // chat messages will be filtered out by server not agent
+                if (line.contains("DoomConsoleResultEnd")) {
+                    onResultEnd();
+                    return;
+                }
+
+                if (consoleResultNotifier.getCount() == 0) {
+                    throw new IllegalStateException("Got line after finished waiting for console result");
+                }
+                consoleResultBuffer.add(line);
+            }
+        }
+
+        void onResultEnd() {
+            synchronized (lock) {
+                consoleResultNotifier.countDown();
+            }
+        }
+
+        List<String> await() throws InterruptedException, TimeoutException {
+            if (!consoleResultNotifier.await(30, TimeUnit.SECONDS)) {
+                throw new TimeoutException("Timed out waiting for console result");
+            }
+            return consoleResultBuffer;
+        }
+
     }
 }

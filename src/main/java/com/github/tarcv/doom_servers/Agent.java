@@ -1,8 +1,6 @@
 package com.github.tarcv.doom_servers;
 
-import com.github.tarcv.doom_servers.messages.Message;
-import com.github.tarcv.doom_servers.messages.RunServer;
-import com.github.tarcv.doom_servers.messages.ServerStarted;
+import com.github.tarcv.doom_servers.messages.*;
 import org.jetbrains.annotations.Nullable;
 
 import javax.websocket.ClientEndpoint;
@@ -11,7 +9,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.TimeoutException;
 
 @ClientEndpoint
 public class Agent implements ConnectionListener {
@@ -83,7 +83,7 @@ public class Agent implements ConnectionListener {
     }
 
     @Override
-    public Message onMessage(Message message) {
+    public Message onMessage(Message message) throws TimeoutException, InterruptedException {
         if (message instanceof RunServer) {
             try {
                 ServerConfiguration configuration = ((RunServer)message).getConfiguration();
@@ -94,6 +94,10 @@ public class Agent implements ConnectionListener {
             } catch (Exception e) {
                 return new ServerStarted(e);
             }
+        } else if (message instanceof ConsoleCommand) {
+            List<String> command = ((ConsoleCommand) message).getCommand();
+            List<String> lines = server.executeConsole(command);
+            return new ConsoleResult(lines);
         } else {
             return null;
         }

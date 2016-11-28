@@ -5,5 +5,5 @@ import org.jetbrains.annotations.Nullable;
 
 public interface ConnectionListener {
     @Nullable
-    Message onMessage(Message message);
+    Message onMessage(Message message) throws Throwable;
 }

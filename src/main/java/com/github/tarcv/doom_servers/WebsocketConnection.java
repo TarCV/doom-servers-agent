@@ -4,6 +4,7 @@ import com.github.tarcv.doom_servers.messages.Authenticated;
 import com.github.tarcv.doom_servers.messages.Hello;
 import com.github.tarcv.doom_servers.messages.Mapper;
 import com.github.tarcv.doom_servers.messages.Message;
+import com.github.tarcv.doom_servers.messages.Error;
 
 import javax.websocket.*;
 import java.io.IOException;
@@ -108,7 +109,12 @@ public class WebsocketConnection implements Connection {
                             state = DISCONNECTED;
                         }
                     } else if (LISTENING == state && listener != null) {
-                        Message response = listener.onMessage(decodedMessage);
+                        Message response;
+                        try {
+                            response = listener.onMessage(decodedMessage);
+                        } catch (Throwable e) {
+                            response = new Error(e);
+                        }
                         if (response != null) {
                             OutputStream sendStream = session.getBasicRemote().getSendStream();
                             Mapper.writeValue(sendStream, response);
