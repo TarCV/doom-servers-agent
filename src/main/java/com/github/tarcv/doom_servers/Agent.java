@@ -9,17 +9,21 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 
 @ClientEndpoint
 public class Agent implements ConnectionListener {
+    private static final int CONSOLE_BUFFER_CAPACITY = 1000;
+    private static final long CONSOLE_PUMP_PERIOD = 500;
     private final WebsocketConnectionFactory connectionFactory;
     private final Path executable;
     private final Path workDir;
     private Server server = null;
     private String key;
+    private Connection connection;
 
     public static void main(String[] args) throws IOException {
         Properties properties = loadProperties();
@@ -49,7 +53,7 @@ public class Agent implements ConnectionListener {
 
     private void run() {
         Key key = getKey();
-        Connection connection = connectionFactory.connect(this, "wss://doom-servers:8443/gs-guide-websocket", key);
+        connection = connectionFactory.connect(this, "wss://doom-servers:8443/gs-guide-websocket", key);
     }
 
     private Key getKey() {
@@ -87,7 +91,8 @@ public class Agent implements ConnectionListener {
         if (message instanceof RunServer) {
             try {
                 ServerConfiguration configuration = ((RunServer)message).getConfiguration();
-                Server newServer = new Server(this.executable, this.workDir, configuration);
+                BlockingQueue<String> consoleBlockingSink = runConsolePumping();
+                Server newServer = new Server(this.executable, this.workDir, configuration, consoleBlockingSink);
                 newServer.run();
                 this.server = newServer;
                 return new ServerStarted(null);
@@ -101,6 +106,33 @@ public class Agent implements ConnectionListener {
         } else {
             return null;
         }
+    }
+
+    private BlockingQueue<String> runConsolePumping() {
+        BlockingQueue<String> consoleBlockingSink = new ArrayBlockingQueue<>(CONSOLE_BUFFER_CAPACITY);
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(null, runnable, "ConsolePumper");
+            thread.setDaemon(true);
+            return thread;
+        });
+        List<String> lines = new ArrayList<>(CONSOLE_BUFFER_CAPACITY);
+        Runnable runnable = () -> {
+            // wrap with try-catch to avoid cancelling in ScheduledExecutorService#scheduleAtFixedRate
+            try {
+                synchronized (lines) {
+                    lines.clear();
+                    consoleBlockingSink.drainTo(lines, CONSOLE_BUFFER_CAPACITY);
+                    if (!lines.isEmpty()) {
+                        Message message = new ConsoleBuffer(lines);
+                        connection.send(message);
+                    }
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        };
+        executor.scheduleAtFixedRate(runnable, 0, CONSOLE_PUMP_PERIOD, TimeUnit.MILLISECONDS);
+        return consoleBlockingSink;
     }
 
     private static String getEngineProperty(Properties properties, String engine, String key, @Nullable String defaultValue) {

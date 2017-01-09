@@ -15,9 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.function.Consumer;
 
 import static java.nio.file.StandardOpenOption.*;
@@ -29,6 +27,7 @@ public class Server {
     private final ServerConfiguration configuration;
     private final File executable;
     private final File workDir;
+    private final ConsolePumper consolePumper;
     private PrintWriter processInputSource;
 
     @Nullable
@@ -37,10 +36,11 @@ public class Server {
     private List<Thread> handlingThreads = new ArrayList<>();
     private StartedProcess serverProcess;
 
-    public Server(Path executable, Path workDir, ServerConfiguration configuration) {
+    public Server(Path executable, Path workDir, ServerConfiguration configuration, BlockingQueue<String> consoleBlockingSink) {
         this.executable = executable.toFile();
         this.workDir = workDir.toFile();
         this.configuration = configuration;
+        this.consolePumper = new ConsolePumper(consoleBlockingSink);
     }
 
     public void run() throws IOException, TimeoutException, InterruptedException {
@@ -116,12 +116,9 @@ public class Server {
     }
 
     public void onOutputLine(String line) throws IOException {
-        if (outputLineHandler != null) {
-            OutputHandler tmp = outputLineHandler;
-            assert tmp != null;
-            tmp.onOutputLine(line);
-
-        }
+        OutputHandler tmp = outputLineHandler;
+        assert tmp != null;
+        tmp.onOutputLine(line);
         System.out.println("Output:" + line);
     }
 
@@ -161,7 +158,8 @@ public class Server {
             outputLineHandler = consoleResultWaiter;
             return consoleResultWaiter.await();
         } finally {
-            outputLineHandler = null;
+            outputLineHandler = consolePumper;
+            assert outputLineHandler != null;
         }
     }
 
@@ -286,5 +284,22 @@ public class Server {
             return consoleResultBuffer;
         }
 
+    }
+
+    private static class ConsolePumper implements OutputHandler {
+        private final BlockingQueue<String> lineBuffer;
+
+        private ConsolePumper(BlockingQueue<String> lineBuffer) {
+            this.lineBuffer = lineBuffer;
+        }
+
+        @Override
+        public void onOutputLine(String line) {
+            try {
+                lineBuffer.put(line);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 }

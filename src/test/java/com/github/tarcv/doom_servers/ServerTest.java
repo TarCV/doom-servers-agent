@@ -25,7 +25,7 @@ public class ServerTest {
 
         Map<String, List<String>> configs = Collections.singletonMap("server.cfg", Arrays.asList("parameter1 1"));
         ServerConfiguration configuration = new ServerConfiguration(commandLine, configs);
-        Server server = new Server(executable, workdir, configuration);
+        Server server = new Server(executable, workdir, configuration, consoleBlockingSink);
         server.run();
     }
 }

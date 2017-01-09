@@ -22,6 +22,7 @@ public class WebsocketConnection implements Connection {
     private final Key key;
     private State state = NOT_CONNECTED;
     private ConnectionListener listener = null;
+    private Session session = null;
 
     WebsocketConnection(ConnectionListener listener, String url, Key key) {
         this.listener = listener;
@@ -30,8 +31,6 @@ public class WebsocketConnection implements Connection {
     }
 
     void connectImpl() {
-        Session session = null;
-
         try {
             boolean interrupted = false;
             while (!interrupted) {
@@ -65,6 +64,16 @@ public class WebsocketConnection implements Connection {
         }
     }
 
+    @Override
+    public void send(Message message) throws IOException {
+        send(session, message);
+    }
+
+    private static void send(Session session, Message message) throws IOException {
+        OutputStream sendStream = session.getBasicRemote().getSendStream();
+        Mapper.writeValue(sendStream, message);
+    }
+
     enum State {
         NOT_CONNECTED,
         RECONNECTING,
@@ -80,8 +89,7 @@ public class WebsocketConnection implements Connection {
                 System.out.println("Connected");
 
                 Hello helloMessage = new Hello(key.getToken());
-                OutputStream sendStream = session.getBasicRemote().getSendStream();
-                Mapper.writeValue(sendStream, helloMessage);
+                send(session, helloMessage);
 
                 assert NOT_CONNECTED == state || RECONNECTING == state;
                 state = State.AUTHENTIFICATING;
@@ -116,8 +124,7 @@ public class WebsocketConnection implements Connection {
                             response = new Error(e);
                         }
                         if (response != null) {
-                            OutputStream sendStream = session.getBasicRemote().getSendStream();
-                            Mapper.writeValue(sendStream, response);
+                            send(session, response);
                         }
                     } else {
                         logUnexpectedMessage(message);
